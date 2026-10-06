@@ -33,18 +33,20 @@ const GROUND_Y = H - 30;
 const ALTITUDE = 60;             // plane cruises this high above the ground
 const FLIGHT_Y = GROUND_Y - ALTITUDE;
 const GRAVITY = 0.5;
-const JUMP_VEL = -14;
+const JUMP_VEL = -12.5;          // apex ~156px; buildings lowered by the same 40px
 
 // ---- state ----
 let state = "idle";              // idle | playing | dead
 let t = 0;                       // frame counter
-let speed = 6;
-const SPEED_START = 6, SPEED_MAX = 15;
+let speed = 10;
+const SPEED_START = 10, SPEED_MAX = 18;
 let score = 0, hiScore = +(localStorage.getItem("planeHi") || 0);
 let obstacles = [];              // {x, type, ...}
 let clouds = [];
 let particles = [];              // crash debris
 let nextSpawnIn = 0;
+const WALL_AT = [900];           // scores where the mega tower appears
+let wallIndex = 0;
 let groundOffset = 0;
 
 const plane = { x: 70, y: FLIGHT_Y - 30, w: 52, h: 26, vy: 0, grounded: true, rot: 0, dead: false, stuck: false };
@@ -63,9 +65,22 @@ function beep(freq, dur) {
 }
 
 // ---- input ----
+const restartBtn = { x: W / 2 - 75, y: H / 2 + 28, w: 150, h: 40 };
+
+function canvasPos(e) {
+  const r = canvas.getBoundingClientRect();
+  const cx = (e.touches ? e.touches[0].clientX : e.clientX) - r.left;
+  const cy = (e.touches ? e.touches[0].clientY : e.clientY) - r.top;
+  return { x: cx * (W / r.width), y: cy * (H / r.height) };
+}
+function inBtn(p) {
+  return p.x >= restartBtn.x && p.x <= restartBtn.x + restartBtn.w &&
+         p.y >= restartBtn.y && p.y <= restartBtn.y + restartBtn.h;
+}
+
 function press() {
   if (state === "idle") { start(); return; }
-  if (state === "dead") { reset(); start(); return; }
+  if (state === "dead") return;  // restart only via the on-screen button
   if (plane.grounded) {          // one jump, like the dino — must land first
     plane.vy = JUMP_VEL;
     plane.grounded = false;
@@ -74,14 +89,27 @@ function press() {
 window.addEventListener("keydown", e => {
   if (["Space", "ArrowUp", "KeyW"].includes(e.code)) { e.preventDefault(); press(); }
 });
-canvas.addEventListener("mousedown", press);
-canvas.addEventListener("touchstart", e => { e.preventDefault(); press(); }, { passive: false });
+canvas.addEventListener("mousedown", e => {
+  if (state === "dead") {
+    if (inBtn(canvasPos(e))) { reset(); start(); }
+  } else press();
+});
+canvas.addEventListener("touchstart", e => {
+  e.preventDefault();
+  if (state === "dead") {
+    if (inBtn(canvasPos(e))) { reset(); start(); }
+  } else press();
+}, { passive: false });
+canvas.addEventListener("mousemove", e => {
+  canvas.style.cursor = (state === "dead" && inBtn(canvasPos(e))) ? "pointer" : "default";
+});
 
 // ---- game flow ----
 function reset() {
   t = 0; speed = SPEED_START; score = 0;
   obstacles = [];
   particles = [];
+  wallIndex = 0;
   nextSpawnIn = 60;
   plane.y = FLIGHT_Y - plane.h - 2;
   plane.vy = 0; plane.grounded = true; plane.rot = 0; plane.dead = false; plane.stuck = false;
@@ -191,7 +219,7 @@ function spawnObstacle() {
   let x = W + 20;
   for (let i = 0; i < count; i++) {
     const w = 22 + Math.random() * 26;               // thickness varies per building
-    const h = (55 + Math.random() * 65) + ALTITUDE;  // heights extended by the altitude increase
+    const h = (55 + Math.random() * 65) + ALTITUDE - 40;  // heights lowered with the jump (same 40px)
     obstacles.push({ x, type: "tower", w, h });
     x += w + 8;                                      // tight gap inside a group, like cacti
   }
@@ -200,7 +228,7 @@ function spawnObstacle() {
 // ---- update ----
 function update() {
   t++;
-  speed = Math.min(SPEED_MAX, speed + 0.0015);
+  speed = Math.min(SPEED_MAX, speed + 0.002);
   score += speed * 0.01;
 
   // plane physics: one jump arc, always settles back to cruising altitude
@@ -219,6 +247,15 @@ function update() {
   for (const c of clouds) {
     c.x -= speed * c.s * 0.4;
     if (c.x < -60) { c.x = W + 40; c.y = 20 + Math.random() * 90; }
+  }
+
+  // mega towers: at these scores, spawn two extremely tall towers side by
+  // side (hitbox and all) that scroll in like any other obstacle.
+  // Too tall to jump — you crash.
+  if (wallIndex < WALL_AT.length && Math.floor(score) >= WALL_AT[wallIndex]) {
+    wallIndex++;
+    obstacles.push({ x: W + 20, type: "tower", w: 44, h: H });
+    obstacles.push({ x: W + 20 + 44 + 8, type: "tower", w: 44, h: H });
   }
 
   // spawn
@@ -270,7 +307,13 @@ function drawTower(o) {
   ctx.fillStyle = "#535353";
   // body
   ctx.fillRect(x, top, w, o.h);
+  // lit right edge / shaded left edge so each tower reads as its own building
+  ctx.fillStyle = "#7a7a7a";
+  ctx.fillRect(x + w - 2, top, 2, o.h);
+  ctx.fillStyle = "#3a3a3a";
+  ctx.fillRect(x, top, 2, o.h);
   // antenna / tiered top like a skyline tower
+  ctx.fillStyle = "#535353";
   ctx.fillRect(x + w * 0.35, top - 10, w * 0.3, 10);
   ctx.fillRect(x + w * 0.45, top - 16, 2, 6);
   // windows
@@ -328,8 +371,15 @@ function drawText() {
   } else if (state === "dead") {
     ctx.font = "bold 24px 'Courier New', monospace";
     ctx.fillText("G A M E  O V E R", W / 2, H / 2 - 20);
-    ctx.font = "16px 'Courier New', monospace";
-    if (Math.floor(t / 30) % 2 === 0) ctx.fillText("PRESS SPACE TO RESTART", W / 2, H / 2 + 16);
+    // restart button
+    ctx.fillStyle = "#f7f7f7";
+    ctx.fillRect(restartBtn.x, restartBtn.y, restartBtn.w, restartBtn.h);
+    ctx.strokeStyle = "#535353";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(restartBtn.x, restartBtn.y, restartBtn.w, restartBtn.h);
+    ctx.fillStyle = "#535353";
+    ctx.font = "bold 18px 'Courier New', monospace";
+    ctx.fillText("RESTART", W / 2, restartBtn.y + 26);
   }
 }
 
