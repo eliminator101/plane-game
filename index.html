@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Plane Runner</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #f7f7f7;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: "Segoe UI", Arial, sans-serif;
+    user-select: none;
+  }
+  #game {
+    background: #f7f7f7;
+    image-rendering: pixelated;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" width="1200" height="300"></canvas>
+<script>
+"use strict";
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+const W = canvas.width, H = canvas.height;
+const GROUND_Y = H - 30;
+const ALTITUDE = 60;             // plane cruises this high above the ground
+const FLIGHT_Y = GROUND_Y - ALTITUDE;
+const GRAVITY = 0.5;
+const JUMP_VEL = -14;
+
+// ---- state ----
+let state = "idle";              // idle | playing | dead
+let t = 0;                       // frame counter
+let speed = 6;
+const SPEED_START = 6, SPEED_MAX = 15;
+let score = 0, hiScore = +(localStorage.getItem("planeHi") || 0);
+let obstacles = [];              // {x, type, ...}
+let clouds = [];
+let particles = [];              // crash debris
+let nextSpawnIn = 0;
+let groundOffset = 0;
+
+const plane = { x: 70, y: FLIGHT_Y - 30, w: 52, h: 26, vy: 0, grounded: true, rot: 0, dead: false, stuck: false };
+
+// sound (tiny beep, like the dino's)
+let audioCtx = null;
+function beep(freq, dur) {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.frequency.value = freq; o.type = "square";
+    g.gain.value = 0.03;
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime + dur);
+  } catch (e) {}
+}
+
+// ---- input ----
+function press() {
+  if (state === "idle") { start(); return; }
+  if (state === "dead") { reset(); start(); return; }
+  if (plane.grounded) {          // one jump, like the dino — must land first
+    plane.vy = JUMP_VEL;
+    plane.grounded = false;
+  }
+}
+window.addEventListener("keydown", e => {
+  if (["Space", "ArrowUp", "KeyW"].includes(e.code)) { e.preventDefault(); press(); }
+});
+canvas.addEventListener("mousedown", press);
+canvas.addEventListener("touchstart", e => { e.preventDefault(); press(); }, { passive: false });
+
+// ---- game flow ----
+function reset() {
+  t = 0; speed = SPEED_START; score = 0;
+  obstacles = [];
+  particles = [];
+  nextSpawnIn = 60;
+  plane.y = FLIGHT_Y - plane.h - 2;
+  plane.vy = 0; plane.grounded = true; plane.rot = 0; plane.dead = false; plane.stuck = false;
+  clouds = [];
+  for (let i = 0; i < 4; i++)
+    clouds.push({ x: Math.random() * W, y: 20 + Math.random() * 90, s: 0.3 + Math.random() * 0.7 });
+}
+function start() { state = "playing"; }
+function die() {
+  state = "dead";
+  beep(150, 0.2);
+  plane.dead = true;
+  if (!plane.stuck) plane.vy = -5;   // free-fall wrecks pop up; stuck ones don't
+  spawnCrash(plane.x + plane.w - 10, plane.y + plane.h / 2);
+  if (score > hiScore) { hiScore = Math.floor(score); localStorage.setItem("planeHi", hiScore); }
+}
+
+// wreck physics while state === "dead"
+function updateWreck() {
+  if (!plane.dead) return;
+  if (plane.stuck) {
+    // embedded in the building: no falling, just a steady smoke wisp
+    if (t % 5 === 0) spawnSmoke(plane.x + plane.w - 8, plane.y + plane.h / 2, true);
+    return;
+  }
+  plane.vy += GRAVITY * 0.8;
+  plane.y += plane.vy;
+  plane.rot += 0.12;
+  let resting = false;
+  if (plane.y + plane.h >= GROUND_Y) {
+    plane.y = GROUND_Y - plane.h;
+    if (plane.vy > 2.5) plane.vy = -plane.vy * 0.35;   // small bounce
+    else { plane.vy = 0; resting = true; }
+  }
+  // smoke trail from the fuselage (thicker while falling, thin wisp once down)
+  if (t % (resting ? 6 : 3) === 0)
+    spawnSmoke(plane.x + plane.w / 2, plane.y + plane.h / 2, resting);
+}
+
+function spawnSmoke(x, y, resting) {
+  particles.push({
+    x: x + (Math.random() - 0.5) * 14,
+    y: y + (Math.random() - 0.5) * 10,
+    vx: -0.5 - Math.random() * 0.8,
+    vy: -0.4 - Math.random() * 0.6,
+    size: resting ? 3 : 4 + Math.random() * 3,
+    grow: 0.12,
+    life: 1,
+    decay: 0.012 + Math.random() * 0.01,
+    color: resting ? "#9a9a9a" : ["#6a6a6a", "#7d7d7d", "#555555"][Math.floor(Math.random() * 3)],
+    grav: -0.005,
+    circle: true,
+  });
+}
+
+// ---- crash effect ----
+function spawnCrash(x, y) {
+  for (let i = 0; i < 36; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = 1 + Math.random() * 5;
+    const fire = i < 12;                    // inner burst = fire, rest = smoke/debris
+    particles.push({
+      x, y,
+      vx: Math.cos(a) * sp + speed * 0.5,   // inherit some forward speed
+      vy: Math.sin(a) * sp - 1.5,
+      size: fire ? 3 + Math.random() * 4 : 2 + Math.random() * 3,
+      life: 1,
+      decay: 0.008 + Math.random() * 0.015,
+      color: fire
+        ? ["#e8a33d", "#d9534f", "#f0d043"][i % 3]
+        : ["#535353", "#8a8a8a", "#3a3a3a"][i % 3],
+      grav: fire ? 0.05 : 0.15,
+      grow: 0,
+      circle: false,
+    });
+  }
+}
+function updateParticles() {
+  for (const p of particles) {
+    p.x += p.vx; p.y += p.vy;
+    p.vy += p.grav;
+    p.vx *= 0.99;
+    p.size += p.grow;
+    p.life -= p.decay;
+  }
+  particles = particles.filter(p => p.life > 0);
+}
+function drawParticles() {
+  for (const p of particles) {
+    ctx.globalAlpha = Math.max(0, p.life) * (p.circle ? 0.5 : 1);
+    ctx.fillStyle = p.color;
+    if (p.circle) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.fillRect(p.x, p.y, p.size, p.size);
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ---- spawning ----
+function spawnObstacle() {
+  // building group (cactus-group equivalent): 1-3 buildings, varied thickness
+  const count = 1 + Math.floor(Math.random() * 3);   // 1, 2 or 3
+  let x = W + 20;
+  for (let i = 0; i < count; i++) {
+    const w = 22 + Math.random() * 26;               // thickness varies per building
+    const h = (55 + Math.random() * 65) + ALTITUDE;  // heights extended by the altitude increase
+    obstacles.push({ x, type: "tower", w, h });
+    x += w + 8;                                      // tight gap inside a group, like cacti
+  }
+}
+
+// ---- update ----
+function update() {
+  t++;
+  speed = Math.min(SPEED_MAX, speed + 0.0015);
+  score += speed * 0.01;
+
+  // plane physics: one jump arc, always settles back to cruising altitude
+  plane.vy += GRAVITY;
+  plane.y += plane.vy;
+  if (plane.y + plane.h >= FLIGHT_Y - 2) {
+    plane.y = FLIGHT_Y - plane.h - 2;
+    plane.vy = 0;
+    plane.grounded = true;
+  }
+
+  // ground scroll
+  groundOffset = (groundOffset + speed) % 24;
+
+  // clouds drift
+  for (const c of clouds) {
+    c.x -= speed * c.s * 0.4;
+    if (c.x < -60) { c.x = W + 40; c.y = 20 + Math.random() * 90; }
+  }
+
+  // spawn
+  if (--nextSpawnIn <= 0) {
+    spawnObstacle();
+    nextSpawnIn = Math.max(45, (140 - speed * 6)) + Math.random() * 80;
+  }
+
+  // move obstacles
+  for (const o of obstacles) o.x -= speed;
+  obstacles = obstacles.filter(o => o.x + o.w > -20);
+
+  // collision (buildings only)
+  const px = plane.x + 8, pw = plane.w - 16;   // forgiving hitbox
+  const py = plane.y + 5, ph = plane.h - 10;
+  for (const o of obstacles) {
+    const ox = o.x, oy = GROUND_Y - o.h, ow = o.w, oh = o.h;
+    if (px < ox + ow && px + pw > ox && py < oy + oh && py + ph > oy) {
+      // stick to the building: nose buried in the facade, tilted up on impact
+      plane.x = ox - plane.w + 10;
+      plane.rot = -0.3;
+      plane.stuck = true;
+      die();
+      return;
+    }
+  }
+}
+
+// ---- drawing (pixel-ish style like the dino game) ----
+function drawGround() {
+  ctx.strokeStyle = "#535353";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, GROUND_Y + 1);
+  ctx.lineTo(W, GROUND_Y + 1);
+  ctx.stroke();
+  ctx.fillStyle = "#535353";
+  for (let x = -groundOffset; x < W; x += 24) ctx.fillRect(x, GROUND_Y + 12, 8, 2);
+}
+
+function drawCloud(c) {
+  ctx.fillStyle = "#d9d9d9";
+  ctx.fillRect(c.x, c.y, 34 * c.s + 10, 10 * c.s + 4);
+  ctx.fillRect(c.x + 8 * c.s, c.y - 6 * c.s, 20 * c.s, 8 * c.s);
+}
+
+function drawTower(o) {
+  const x = o.x, top = GROUND_Y - o.h, w = o.w;
+  ctx.fillStyle = "#535353";
+  // body
+  ctx.fillRect(x, top, w, o.h);
+  // antenna / tiered top like a skyline tower
+  ctx.fillRect(x + w * 0.35, top - 10, w * 0.3, 10);
+  ctx.fillRect(x + w * 0.45, top - 16, 2, 6);
+  // windows
+  ctx.fillStyle = "#f7f7f7";
+  for (let wy = top + 8; wy < GROUND_Y - 6; wy += 14)
+    for (let wx = x + 4; wx < x + w - 4; wx += 8)
+      ctx.fillRect(wx, wy, 3, 4);
+}
+
+function drawBird(o) {}
+
+function drawPlane() {
+  const { x, y, w, h } = plane;
+  ctx.save();
+  ctx.translate(x + w / 2, y + h / 2);
+  if (plane.dead) ctx.rotate(plane.rot);        // tumbling wreck
+  else if (plane.vy < -1) ctx.rotate(-0.12);    // slight nose-up on jump
+  else if (plane.vy > 1) ctx.rotate(0.12);      // nose-down when falling
+  ctx.translate(-w / 2, -h / 2);
+  ctx.fillStyle = "#535353";
+  // fuselage
+  ctx.fillRect(6, 8, w - 10, 10);
+  // nose
+  ctx.fillRect(w - 6, 10, 6, 6);
+  // tail fin
+  ctx.fillRect(0, 0, 6, 12);
+  ctx.fillRect(2, 12, 6, 4);
+  // wing (bobs with vy)
+  const wing = plane.vy < -1 ? -4 : plane.vy > 1 ? 4 : 0;
+  ctx.fillRect(18, 14 + wing, 16, 6);
+  // cockpit
+  ctx.fillStyle = "#f7f7f7";
+  ctx.fillRect(w - 16, 9, 6, 4);
+  // propeller (still spins only when alive)
+  if (!plane.dead) {
+    const pa = t % 4 < 2 ? 12 : 4;
+    ctx.fillStyle = "#535353";
+    ctx.fillRect(w, 4 + (12 - pa) / 2, 2, pa);
+  }
+  ctx.restore();
+}
+
+function drawText() {
+  ctx.fillStyle = "#535353";
+  ctx.font = "bold 20px 'Courier New', monospace";
+  ctx.textAlign = "right";
+  ctx.fillText("HI " + String(hiScore).padStart(5, "0") + "  " +
+                String(Math.floor(score)).padStart(5, "0"), W - 20, 30);
+  ctx.textAlign = "center";
+  if (state === "idle") {
+    ctx.fillText("PLANE RUNNER", W / 2, H / 2 - 30);
+    ctx.font = "16px 'Courier New', monospace";
+    ctx.fillText("SPACE / TAP to jump — hop over the building groups", W / 2, H / 2);
+    if (Math.floor(t / 30) % 2 === 0) ctx.fillText("PRESS TO START", W / 2, H / 2 + 30);
+  } else if (state === "dead") {
+    ctx.font = "bold 24px 'Courier New', monospace";
+    ctx.fillText("G A M E  O V E R", W / 2, H / 2 - 20);
+    ctx.font = "16px 'Courier New', monospace";
+    if (Math.floor(t / 30) % 2 === 0) ctx.fillText("PRESS SPACE TO RESTART", W / 2, H / 2 + 16);
+  }
+}
+
+// ---- main loop ----
+reset();
+state = "idle";
+function loop() {
+  t++;
+  ctx.clearRect(0, 0, W, H);
+  for (const c of clouds) drawCloud(c);
+  if (state === "playing") update();
+  else {
+    for (const c of clouds) c.x -= 0.3;
+    for (const c of clouds) if (c.x < -60) c.x = W + 40;
+    if (state === "idle")
+      plane.y = FLIGHT_Y - plane.h - 2 + Math.sin(t / 20) * 3;
+    else
+      updateWreck();            // crashed: tumble to the ground, trailing smoke
+  }
+  updateParticles();
+  for (const o of obstacles) drawTower(o);
+  drawGround();
+  drawPlane();
+  drawParticles();
+  drawText();
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
