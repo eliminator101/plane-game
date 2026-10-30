@@ -60,6 +60,12 @@ let groundOffset = 0;
 
 const plane = { x: 70, y: FLIGHT_Y - 30, w: 52, h: 26, vy: 0, grounded: true, rot: 0, dead: false, stuck: false };
 
+// character portrait skin
+const portraitImg = new Image();
+portraitImg.src = "character portriat.jpg";
+let usePortrait = localStorage.getItem("planePortrait") === "1";
+const skinToggle = { x: W - 64, y: 10, w: 50, h: 24 };   // top-right corner switch
+
 // sound (tiny beep, like the dino's)
 let audioCtx = null;
 function beep(freq, dur) {
@@ -86,6 +92,15 @@ function inBtn(p) {
   return p.x >= restartBtn.x && p.x <= restartBtn.x + restartBtn.w &&
          p.y >= restartBtn.y && p.y <= restartBtn.y + restartBtn.h;
 }
+function inToggle(p) {
+  return p.x >= skinToggle.x && p.x <= skinToggle.x + skinToggle.w &&
+         p.y >= skinToggle.y && p.y <= skinToggle.y + skinToggle.h;
+}
+function toggleSkin() {
+  usePortrait = !usePortrait;
+  localStorage.setItem("planePortrait", usePortrait ? "1" : "0");
+  beep(usePortrait ? 880 : 440, 0.06);
+}
 
 function press() {
   if (state === "idle") { start(); return; }
@@ -99,18 +114,21 @@ window.addEventListener("keydown", e => {
   if (["Space", "ArrowUp", "KeyW"].includes(e.code)) { e.preventDefault(); press(); }
 });
 canvas.addEventListener("mousedown", e => {
+  if (inToggle(canvasPos(e))) { toggleSkin(); return; }
   if (state === "dead") {
     if (inBtn(canvasPos(e))) { reset(); start(); }
   } else press();
 });
 canvas.addEventListener("touchstart", e => {
   e.preventDefault();
+  if (inToggle(canvasPos(e))) { toggleSkin(); return; }
   if (state === "dead") {
     if (inBtn(canvasPos(e))) { reset(); start(); }
   } else press();
 }, { passive: false });
 canvas.addEventListener("mousemove", e => {
-  canvas.style.cursor = (state === "dead" && inBtn(canvasPos(e))) ? "pointer" : "default";
+  const p = canvasPos(e);
+  canvas.style.cursor = (inToggle(p) || (state === "dead" && inBtn(p))) ? "pointer" : "default";
 });
 
 // ---- game flow ----
@@ -342,6 +360,14 @@ function drawPlane() {
   else if (plane.vy < -1) ctx.rotate(-0.12);    // slight nose-up on jump
   else if (plane.vy > 1) ctx.rotate(0.12);      // nose-down when falling
   ctx.translate(-w / 2, -h / 2);
+
+  // portrait skin: draw the .jpg instead of the pixel plane
+  if (usePortrait && portraitImg.complete && portraitImg.naturalWidth > 0) {
+    ctx.drawImage(portraitImg, 0, 0, w, h);
+    ctx.restore();
+    return;
+  }
+
   ctx.fillStyle = "#535353";
   // fuselage
   ctx.fillRect(6, 8, w - 10, 10);
@@ -370,7 +396,7 @@ function drawText() {
   ctx.font = "bold 20px 'Courier New', monospace";
   ctx.textAlign = "right";
   ctx.fillText("HI " + String(hiScore).padStart(5, "0") + "  " +
-                String(Math.floor(score)).padStart(5, "0"), W - 20, 30);
+                String(Math.floor(score)).padStart(5, "0"), W - 76, 30);
   ctx.textAlign = "center";
   if (state === "idle") {
     ctx.fillText("PLANE RUNNER", W / 2, H / 2 - 30);
@@ -390,6 +416,25 @@ function drawText() {
     ctx.font = "bold 18px 'Courier New', monospace";
     ctx.fillText("RESTART", W / 2, restartBtn.y + 26);
   }
+
+  // skin toggle switch (top-right corner)
+  const s = skinToggle, knobR = s.h / 2 - 3;
+  ctx.fillStyle = usePortrait ? "#535353" : "#f7f7f7";
+  ctx.fillRect(s.x, s.y, s.w, s.h);
+  ctx.strokeStyle = "#535353";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(s.x, s.y, s.w, s.h);
+  // knob slides left (off) / right (on)
+  const kx = usePortrait ? s.x + s.w - knobR - 3 : s.x + knobR + 3;
+  ctx.fillStyle = usePortrait ? "#f7f7f7" : "#535353";
+  ctx.beginPath();
+  ctx.arc(kx, s.y + s.h / 2, knobR, 0, Math.PI * 2);
+  ctx.fill();
+  // tiny label under the switch
+  ctx.fillStyle = "#535353";
+  ctx.font = "10px 'Courier New', monospace";
+  ctx.textAlign = "center";
+  ctx.fillText("SKIN", s.x + s.w / 2, s.y + s.h + 12);
 }
 
 // ---- main loop ----
